@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="ingeniousReaper">
+  <category name="Tempo">
+    <reapack name="GetClickTempo.lua" type="script" desc="Build tempo map from recorded click track">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-05T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/GetClickTempo.lua</source>
+      </version>
+    </reapack>
+    <reapack name="TempoToClickAlign.lua" type="script" desc="Align existing tempo map to Click track transients">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-05T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/TempoToClickAlign.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Tracks">
+    <reapack name="ImportLCC.lua" type="script" desc="Import files to same-named tracks at project start">
+      <version name="0.1.2" author="ingeniousWizard" time="2026-05-05T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/ImportLCC.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Recording">
+    <reapack name="ScheduleRecord.lua" type="script" desc="Scheduled Recorder - Multi-Schedule (Persistent)">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-05T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/ScheduleRecord.lua</source>
+      </version>
+    </reapack>
+  </category>
+</index>
