@@ -22,7 +22,7 @@
       </version>
     </reapack>
   </category>
-  <category name="--">
+  <category name="Recording">
     <reapack name="ScheduleRecord.lua" type="script" desc="Scheduled Recorder - Multi-Schedule (Persistent)">
       <version name="0.1" author="ingeniousWizard" time="2026-05-05T00:00:00Z">
         <changelog><![CDATA[Initial release]]></changelog>
