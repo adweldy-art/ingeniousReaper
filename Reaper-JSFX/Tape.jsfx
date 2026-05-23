@@ -1,0 +1,721 @@
+/* ========================================
+ *  ToTape9 - JSFX Port
+ *  Copyright (c) airwindows, Airwindows uses the MIT license
+ *  JSFX conversion by ingeniousReaper
+ *
+ *  Original VST: ToTape9.cpp, ToTape9.h, ToTape9Proc.cpp
+ *  Licensed under MIT License
+ * ======================================== */
+
+desc: ToTape9 - Tape Emulation
+tags: tape distortion saturation
+
+slider1:0.5<0,1,0.01>Input (+12dB)
+slider2:0.5<0,1,0.01>Tilt (Encode)
+slider3:0.5<0,1,0.01>Shape (Filter)
+slider4:0.5<0,1,0.01>Flutter (Depth)
+slider5:0.5<0,1,0.01>FlutSpd (Rate)
+slider6:0.5<0,1,0.01>Bias (Hysteresis)
+slider7:0.5<0,1,0.01>HeadBmp (Resonance)
+slider8:0.5<0,1,0.01>HeadFrq (25-200Hz)
+slider9:0.5<0,1,0.01>Output (+12dB)
+
+@init
+// ---- State Variables ----
+// IIR encode/decode filters
+iirEncL = 0.0; iirDecL = 0.0;
+compEncL = 1.0; compDecL = 1.0;
+avgEncL = 0.0; avgDecL = 0.0;
+
+iirEncR = 0.0; iirDecR = 0.0;
+compEncR = 1.0; compDecR = 1.0;
+avgEncR = 0.0; avgDecR = 0.0;
+
+// Flutter delay buffer (1001 samples)
+flutBufL = 1000;  // memory offset
+flutBufR = 2001;  // memory offset
+memset(flutBufL, 0, 1001);
+memset(flutBufR, 0, 1001);
+
+sweepL = $pi;
+sweepR = $pi;
+nextmaxL = 0.5;
+nextmaxR = 0.5;
+gcount = 0;
+
+// Bias routine - gslew array (10 values for thresholds)
+gslewBuf = 3002;
+
+// Hysteresis
+hysteresisL = 0.0;
+hysteresisR = 0.0;
+
+// Head bump state
+headBumpL = 0.0;
+headBumpR = 0.0;
+// hdbA and hdbB: [freq, reso, a0, a1, a2, b1, b2, sL1, sL2, sR1, sR2]
+hdbABuf = 3012;  // Two sets of 11 values
+hdbBBuf = 3023;
+
+// Initialize hdbA/B resonance values
+memset(hdbABuf + 1, 0.618033988749894848204586, 1);
+memset(hdbBBuf + 1, 0.618033988749894848204586, 1);
+
+// Averaging buffers for anti-aliasing (pre-saturation)
+avg32BufL = 3034; avg32BufR = 3067;
+avg16BufL = 3100; avg16BufR = 3116;
+avg8BufL = 3132;  avg8BufR = 3140;
+avg4BufL = 3148;  avg4BufR = 3152;
+avg2BufL = 3156;  avg2BufR = 3158;
+
+// Post-distortion averaging buffers
+post32BufL = 3160; post32BufR = 3193;
+post16BufL = 3226; post16BufR = 3242;
+post8BufL = 3258;  post8BufR = 3266;
+post4BufL = 3274;  post4BufR = 3278;
+post2BufL = 3282;  post2BufR = 3284;
+
+memset(avg32BufL, 0, 33);
+memset(avg32BufR, 0, 33);
+memset(avg16BufL, 0, 17);
+memset(avg16BufR, 0, 17);
+memset(avg8BufL, 0, 9);
+memset(avg8BufR, 0, 9);
+memset(avg4BufL, 0, 5);
+memset(avg4BufR, 0, 5);
+memset(avg2BufL, 0, 3);
+memset(avg2BufR, 0, 3);
+
+memset(post32BufL, 0, 33);
+memset(post32BufR, 0, 33);
+memset(post16BufL, 0, 17);
+memset(post16BufR, 0, 17);
+memset(post8BufL, 0, 9);
+memset(post8BufR, 0, 9);
+memset(post4BufL, 0, 5);
+memset(post4BufR, 0, 5);
+memset(post2BufL, 0, 3);
+memset(post2BufR, 0, 3);
+
+avgPos = 0;
+lastDarkL = 0.0;
+lastDarkR = 0.0;
+
+// ClipOnly3 state
+lastSampleL = 0.0;
+wasPosClipL = 0;
+wasNegClipL = 0;
+lastSampleR = 0.0;
+wasPosClipR = 0;
+wasNegClipR = 0;
+
+// Slew tracking for ClipOnly3
+intermediateL = 3286; intermediateR = 3303;
+slewL = 3320; slewR = 3337;
+memset(intermediateL, 0, 17);
+memset(intermediateR, 0, 17);
+memset(slewL, 0, 17);
+memset(slewR, 0, 17);
+
+// PRNG seed
+fpdL = 123456789;
+fpdR = 987654321;
+
+// Denormal handling constants (avoid scientific notation in @sample)
+denormFloor = 1.18 * pow(10, -23);
+denormNoise = 1.18 * pow(10, -17);
+
+// Phi constant for bias thresholds
+phi = 1.618033988749894848204586;
+
+@sample
+function mempeek(addr)
+(
+  addr[0];
+);
+
+// ---- Parameter Mapping ----
+overallscale = srate / 44100.0;
+
+spacing = floor(overallscale);
+spacing = (spacing < 1) ? 1 : ((spacing > 16) ? 16 : spacing);
+
+slewsing = floor(overallscale * 2.0);
+slewsing = (slewsing < 2) ? 2 : ((slewsing > 32) ? 32 : slewsing);
+
+inputGain = pow(slider1 * 2.0, 2.0);
+
+dublyAmount = slider2 * 2.0;
+outlyAmount = (1.0 - slider2) * -2.0;
+outlyAmount = (outlyAmount < -1.0) ? -1.0 : outlyAmount;
+
+iirEncFreq = (1.0 - slider3) / overallscale;
+iirDecFreq = slider3 / overallscale;
+
+flutDepth = pow(slider4, 6) * overallscale * 50;
+flutDepth = (flutDepth > 498.0) ? 498.0 : flutDepth;
+flutFrequency = (0.02 * pow(slider5, 3)) / overallscale;
+
+bias = (slider6 * 2.0) - 1.0;
+underBias = (pow(bias, 4) * 0.25) / overallscale;
+overBias = pow(1.0 - bias, 3) / overallscale;
+
+(bias > 0.0) ? (underBias = 0.0) : 0;
+(bias < 0.0) ? (overBias = 1.0 / overallscale) : 0;
+
+// Set bias thresholds using golden ratio
+gslewVal = overBias;
+x = 0;
+loop(10,
+  memset(gslewBuf + x, gslewVal, 1);
+  gslewVal *= phi;
+  x += 1;
+);
+
+headBumpDrive = (slider7 * 0.1) / overallscale;
+headBumpMix = slider7 * 0.5;
+
+headBumpFreq = (slider8 * slider8 * 175.0) + 25.0;
+freqNorm = headBumpFreq / srate;
+freqNorm = (freqNorm > 0.5) ? 0.5 : freqNorm;
+
+// Compute biquad coefficients for head bump (two cascaded stages)
+K = tan($pi * freqNorm);
+resonance = 0.618033988749894848204586;
+norm = 1.0 / (1.0 + K / resonance + K * K);
+
+memset(hdbABuf+2, K / resonance * norm, 1);      // a0
+memset(hdbABuf+4, -(K / resonance * norm), 1);   // a2
+memset(hdbABuf+5, 2.0 * (K * K - 1.0) * norm, 1); // b1
+memset(hdbABuf+6, (1.0 - K / resonance + K * K) * norm, 1); // b2
+
+freqNormB = (freqNorm * 0.9375);
+KB = tan($pi * freqNormB);
+normB = 1.0 / (1.0 + KB / resonance + KB * KB);
+
+memset(hdbBBuf+2, KB / resonance * normB, 1);      // a0
+memset(hdbBBuf+4, -(KB / resonance * normB), 1);   // a2
+memset(hdbBBuf+5, 2.0 * (KB * KB - 1.0) * normB, 1); // b1
+memset(hdbBBuf+6, (1.0 - KB / resonance + KB * KB) * normB, 1); // b2
+
+outputGain = slider9 * 2.0;
+
+inputSampleL = spl0;
+inputSampleR = spl1;
+
+// Denormalization floor
+inputSampleL = (abs(inputSampleL) < denormFloor) ? (fpdL * denormNoise) : inputSampleL;
+inputSampleR = (abs(inputSampleR) < denormFloor) ? (fpdR * denormNoise) : inputSampleR;
+
+// ---- Input Gain ----
+(inputGain != 1.0) ? (
+  inputSampleL *= inputGain;
+  inputSampleR *= inputGain;
+) : 0;
+
+// ---- Dubly Encode ----
+iirEncL = (iirEncL * (1.0 - iirEncFreq)) + (inputSampleL * iirEncFreq);
+highPart = ((inputSampleL - iirEncL) * 2.848);
+highPart += avgEncL; avgEncL = (inputSampleL - iirEncL) * 1.152;
+(highPart > 1.0) ? (highPart = 1.0) : 0;
+(highPart < -1.0) ? (highPart = -1.0) : 0;
+dubly = abs(highPart);
+(dubly > 0.0) ? (
+  adjust = log(1.0 + (255.0 * dubly)) / 2.40823996531;
+  (adjust > 0.0) ? (dubly /= adjust) : 0;
+  compEncL = (compEncL * (1.0 - iirEncFreq)) + (dubly * iirEncFreq);
+  inputSampleL += ((highPart * compEncL) * dublyAmount);
+) : 0;
+
+iirEncR = (iirEncR * (1.0 - iirEncFreq)) + (inputSampleR * iirEncFreq);
+highPart = ((inputSampleR - iirEncR) * 2.848);
+highPart += avgEncR; avgEncR = (inputSampleR - iirEncR) * 1.152;
+(highPart > 1.0) ? (highPart = 1.0) : 0;
+(highPart < -1.0) ? (highPart = -1.0) : 0;
+dubly = abs(highPart);
+(dubly > 0.0) ? (
+  adjust = log(1.0 + (255.0 * dubly)) / 2.40823996531;
+  (adjust > 0.0) ? (dubly /= adjust) : 0;
+  compEncR = (compEncR * (1.0 - iirEncFreq)) + (dubly * iirEncFreq);
+  inputSampleR += ((highPart * compEncR) * dublyAmount);
+) : 0;
+
+// ---- Flutter & Wow ----
+(flutDepth > 0.0) ? (
+  (gcount < 0 || gcount > 999) ? (gcount = 999) : 0;
+  memset(flutBufL + gcount, inputSampleL, 1);
+  
+  count = gcount;
+  offset = flutDepth + (flutDepth * sin(sweepL));
+  sweepL += nextmaxL * flutFrequency;
+  (sweepL > (2.0 * $pi)) ? (
+    sweepL -= 2.0 * $pi;
+    
+    fpdL ^= fpdL << 13;
+    fpdL ^= fpdL >> 17;
+    fpdL ^= fpdL << 5;
+    flutA = 0.24 + ((fpdL / 4294967296.0) * 0.74);
+    
+    fpdL ^= fpdL << 13;
+    fpdL ^= fpdL >> 17;
+    fpdL ^= fpdL << 5;
+    flutB = 0.24 + ((fpdL / 4294967296.0) * 0.74);
+    
+    (abs(flutA - sin(sweepR + nextmaxR)) < abs(flutB - sin(sweepR + nextmaxR))) ?
+      (nextmaxL = flutA) : (nextmaxL = flutB);
+  ) : 0;
+  
+  count += floor(offset);
+  tapIndexA = count - ((count > 999) ? 1000 : 0);
+  tapIndexB = (count + 1) - (((count + 1) > 999) ? 1000 : 0);
+  inputSampleL = (mempeek(flutBufL + tapIndexA) * (1.0 - (offset - floor(offset)))) +
+                  (mempeek(flutBufL + tapIndexB) * (offset - floor(offset)));
+  
+  memset(flutBufR + gcount, inputSampleR, 1);
+  count = gcount;
+  offset = flutDepth + (flutDepth * sin(sweepR));
+  sweepR += nextmaxR * flutFrequency;
+  (sweepR > (2.0 * $pi)) ? (
+    sweepR -= 2.0 * $pi;
+    
+    fpdR ^= fpdR << 13;
+    fpdR ^= fpdR >> 17;
+    fpdR ^= fpdR << 5;
+    flutA = 0.24 + ((fpdR / 4294967296.0) * 0.74);
+    
+    fpdR ^= fpdR << 13;
+    fpdR ^= fpdR >> 17;
+    fpdR ^= fpdR << 5;
+    flutB = 0.24 + ((fpdR / 4294967296.0) * 0.74);
+    
+    (abs(flutA - sin(sweepL + nextmaxL)) < abs(flutB - sin(sweepL + nextmaxL))) ?
+      (nextmaxR = flutA) : (nextmaxR = flutB);
+  ) : 0;
+  
+  count += floor(offset);
+  tapIndexA = count - ((count > 999) ? 1000 : 0);
+  tapIndexB = (count + 1) - (((count + 1) > 999) ? 1000 : 0);
+  inputSampleR = (mempeek(flutBufR + tapIndexA) * (1.0 - (offset - floor(offset)))) +
+                  (mempeek(flutBufR + tapIndexB) * (offset - floor(offset)));
+  
+  gcount -= 1;
+) : 0;
+
+// ---- Bias Routine (Hysteresis slew limiting) ----
+(abs(bias) > 0.001) ? (
+  x = 0;
+  loop(10,
+    gslewVal = mempeek(gslewBuf + x);
+    slewThreshold = mempeek(gslewBuf + (x + 2));
+    
+    (underBias > 0.0) ? (
+      stuck = abs(inputSampleL - (gslewVal / 0.975)) / underBias;
+      (stuck < 1.0) ? (inputSampleL = (inputSampleL * stuck) + ((gslewVal / 0.975) * (1.0 - stuck))) : 0;
+      stuck = abs(inputSampleR - (gslewVal / 0.975)) / underBias;
+      (stuck < 1.0) ? (inputSampleR = (inputSampleR * stuck) + ((gslewVal / 0.975) * (1.0 - stuck))) : 0;
+    ) : 0;
+    
+    ((inputSampleL - gslewVal) > slewThreshold) ? (inputSampleL = gslewVal + slewThreshold) : 0;
+    (-(inputSampleL - gslewVal) > slewThreshold) ? (inputSampleL = gslewVal - slewThreshold) : 0;
+    memset(gslewBuf + x, inputSampleL * 0.975, 1);
+    
+    ((inputSampleR - gslewVal) > slewThreshold) ? (inputSampleR = gslewVal + slewThreshold) : 0;
+    (-(inputSampleR - gslewVal) > slewThreshold) ? (inputSampleR = gslewVal - slewThreshold) : 0;
+    memset(gslewBuf + (x + 1), inputSampleR * 0.975, 1);
+    
+    x += 3;
+  );
+) : 0;
+
+// ---- Hysteresis (Tape memory effect) ----
+applyHysteresis = (1.0 - abs(inputSampleL)) * (1.0 - abs(inputSampleL)) * 0.012;
+hysteresisL = min(max(hysteresisL + (inputSampleL * abs(inputSampleL)), 0.011449), -0.011449) * 0.999;
+inputSampleL += (hysteresisL * applyHysteresis);
+
+applyHysteresis = (1.0 - abs(inputSampleR)) * (1.0 - abs(inputSampleR)) * 0.012;
+hysteresisR = min(max(hysteresisR + (inputSampleR * abs(inputSampleR)), 0.011449), -0.011449) * 0.999;
+inputSampleR += (hysteresisR * applyHysteresis);
+
+// ---- Pre-distortion Anti-aliasing (cascaded averaging) ----
+darkSampleL = inputSampleL;
+darkSampleR = inputSampleR;
+
+(avgPos > 31) ? (avgPos = 0) : 0;
+
+(slewsing > 31) ? (
+  memset(avg32BufL + avgPos, darkSampleL, 1);
+  memset(avg32BufR + avgPos, darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(32, darkSampleL += mempeek(avg32BufL + x); darkSampleR += mempeek(avg32BufR + x); x += 1;);
+  darkSampleL /= 32.0; darkSampleR /= 32.0;
+) : 0;
+
+(slewsing > 15) ? (
+  memset(avg16BufL + (avgPos % 16), darkSampleL, 1);
+  memset(avg16BufR + (avgPos % 16), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(16, darkSampleL += mempeek(avg16BufL + x); darkSampleR += mempeek(avg16BufR + x); x += 1;);
+  darkSampleL /= 16.0; darkSampleR /= 16.0;
+) : 0;
+
+(slewsing > 7) ? (
+  memset(avg8BufL + (avgPos % 8), darkSampleL, 1);
+  memset(avg8BufR + (avgPos % 8), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(8, darkSampleL += mempeek(avg8BufL + x); darkSampleR += mempeek(avg8BufR + x); x += 1;);
+  darkSampleL /= 8.0; darkSampleR /= 8.0;
+) : 0;
+
+(slewsing > 3) ? (
+  memset(avg4BufL + (avgPos % 4), darkSampleL, 1);
+  memset(avg4BufR + (avgPos % 4), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(4, darkSampleL += mempeek(avg4BufL + x); darkSampleR += mempeek(avg4BufR + x); x += 1;);
+  darkSampleL /= 4.0; darkSampleR /= 4.0;
+) : 0;
+
+(slewsing > 1) ? (
+  memset(avg2BufL + (avgPos % 2), darkSampleL, 1);
+  memset(avg2BufR + (avgPos % 2), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(2, darkSampleL += mempeek(avg2BufL + x); darkSampleR += mempeek(avg2BufR + x); x += 1;);
+  darkSampleL /= 2.0; darkSampleR /= 2.0;
+) : 0;
+
+// Slew rate calculation for filter blending
+avgSlewL = min(abs(lastDarkL - inputSampleL) * 0.12 * overallscale, 1.0);
+avgSlewL = 1.0 - ((1.0 - avgSlewL * 1.0) - avgSlewL);
+inputSampleL = (inputSampleL * (1.0 - avgSlewL)) + (darkSampleL * avgSlewL);
+lastDarkL = darkSampleL;
+
+avgSlewR = min(abs(lastDarkR - inputSampleR) * 0.12 * overallscale, 1.0);
+avgSlewR = 1.0 - ((1.0 - avgSlewR * 1.0) - avgSlewR);
+inputSampleR = (inputSampleR * (1.0 - avgSlewR)) + (darkSampleR * avgSlewR);
+lastDarkR = darkSampleR;
+
+// ---- Soft Clipping via Taylor Series (approximates sin) ----
+inputSampleL = max(min(inputSampleL, 2.305929007734908), -2.305929007734908);
+addtwo = inputSampleL * inputSampleL;
+empower = inputSampleL * addtwo;
+inputSampleL -= (empower / 6.0);
+empower *= addtwo;
+inputSampleL += (empower / 69.0);
+empower *= addtwo;
+inputSampleL -= (empower / 2530.08);
+empower *= addtwo;
+inputSampleL += (empower / 224985.6);
+empower *= addtwo;
+inputSampleL -= (empower / 9979200.0);
+
+inputSampleR = max(min(inputSampleR, 2.305929007734908), -2.305929007734908);
+addtwo = inputSampleR * inputSampleR;
+empower = inputSampleR * addtwo;
+inputSampleR -= (empower / 6.0);
+empower *= addtwo;
+inputSampleR += (empower / 69.0);
+empower *= addtwo;
+inputSampleR -= (empower / 2530.08);
+empower *= addtwo;
+inputSampleR += (empower / 224985.6);
+empower *= addtwo;
+inputSampleR -= (empower / 9979200.0);
+
+// ---- Post-distortion Anti-aliasing (cascaded averaging) ----
+darkSampleL = inputSampleL;
+darkSampleR = inputSampleR;
+
+(slewsing > 31) ? (
+  memset(post32BufL + avgPos, darkSampleL, 1);
+  memset(post32BufR + avgPos, darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(32, darkSampleL += mempeek(post32BufL + x); darkSampleR += mempeek(post32BufR + x); x += 1;);
+  darkSampleL /= 32.0; darkSampleR /= 32.0;
+) : 0;
+
+(slewsing > 15) ? (
+  memset(post16BufL + (avgPos % 16), darkSampleL, 1);
+  memset(post16BufR + (avgPos % 16), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(16, darkSampleL += mempeek(post16BufL + x); darkSampleR += mempeek(post16BufR + x); x += 1;);
+  darkSampleL /= 16.0; darkSampleR /= 16.0;
+) : 0;
+
+(slewsing > 7) ? (
+  memset(post8BufL + (avgPos % 8), darkSampleL, 1);
+  memset(post8BufR + (avgPos % 8), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(8, darkSampleL += mempeek(post8BufL + x); darkSampleR += mempeek(post8BufR + x); x += 1;);
+  darkSampleL /= 8.0; darkSampleR /= 8.0;
+) : 0;
+
+(slewsing > 3) ? (
+  memset(post4BufL + (avgPos % 4), darkSampleL, 1);
+  memset(post4BufR + (avgPos % 4), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(4, darkSampleL += mempeek(post4BufL + x); darkSampleR += mempeek(post4BufR + x); x += 1;);
+  darkSampleL /= 4.0; darkSampleR /= 4.0;
+) : 0;
+
+(slewsing > 1) ? (
+  memset(post2BufL + (avgPos % 2), darkSampleL, 1);
+  memset(post2BufR + (avgPos % 2), darkSampleR, 1);
+  darkSampleL = 0.0; darkSampleR = 0.0;
+  x = 0;
+  loop(2, darkSampleL += mempeek(post2BufL + x); darkSampleR += mempeek(post2BufR + x); x += 1;);
+  darkSampleL /= 2.0; darkSampleR /= 2.0;
+) : 0;
+
+avgPos += 1;
+inputSampleL = (inputSampleL * (1.0 - avgSlewL)) + (darkSampleL * avgSlewL);
+inputSampleR = (inputSampleR * (1.0 - avgSlewR)) + (darkSampleR * avgSlewR);
+
+// ---- Head Bump (Dual-stage cascaded biquad resonant filter) ----
+headBumpSampleL = 0.0;
+headBumpSampleR = 0.0;
+
+(headBumpMix > 0.0) ? (
+  headBumpL += (inputSampleL * headBumpDrive);
+  headBumpL -= (headBumpL * headBumpL * headBumpL * (0.0618 / sqrt(overallscale)));
+  
+  headBumpR += (inputSampleR * headBumpDrive);
+  headBumpR -= (headBumpR * headBumpR * headBumpR * (0.0618 / sqrt(overallscale)));
+  
+  // First biquad stage (hdbA)
+  a0 = mempeek(hdbABuf + 2);
+  a1 = mempeek(hdbABuf + 3);
+  a2 = mempeek(hdbABuf + 4);
+  b1 = mempeek(hdbABuf + 5);
+  b2 = mempeek(hdbABuf + 6);
+  sL1 = mempeek(hdbABuf + 7);
+  sL2 = mempeek(hdbABuf + 8);
+  
+  headBiqSampleL = (headBumpL * a0) + sL1;
+  sL1 = (headBumpL * a1) - (headBiqSampleL * b1) + sL2;
+  sL2 = (headBumpL * a2) - (headBiqSampleL * b2);
+  
+  memset(hdbABuf + 7, sL1, 1);
+  memset(hdbABuf + 8, sL2, 1);
+  
+  // Second biquad stage (hdbB)
+  a0 = mempeek(hdbBBuf + 2);
+  a1 = mempeek(hdbBBuf + 3);
+  a2 = mempeek(hdbBBuf + 4);
+  b1 = mempeek(hdbBBuf + 5);
+  b2 = mempeek(hdbBBuf + 6);
+  sL1 = mempeek(hdbBBuf + 7);
+  sL2 = mempeek(hdbBBuf + 8);
+  
+  headBumpSampleL = (headBiqSampleL * a0) + sL1;
+  sL1 = (headBiqSampleL * a1) - (headBumpSampleL * b1) + sL2;
+  sL2 = (headBiqSampleL * a2) - (headBumpSampleL * b2);
+  
+  memset(hdbBBuf + 7, sL1, 1);
+  memset(hdbBBuf + 8, sL2, 1);
+  
+  // Right channel
+  sR1 = mempeek(hdbABuf + 9);
+  sR2 = mempeek(hdbABuf + 10);
+  a0 = mempeek(hdbABuf + 2);
+  a1 = mempeek(hdbABuf + 3);
+  a2 = mempeek(hdbABuf + 4);
+  b1 = mempeek(hdbABuf + 5);
+  b2 = mempeek(hdbABuf + 6);
+  
+  headBiqSampleR = (headBumpR * a0) + sR1;
+  sR1 = (headBumpR * a1) - (headBiqSampleR * b1) + sR2;
+  sR2 = (headBumpR * a2) - (headBiqSampleR * b2);
+  
+  memset(hdbABuf + 9, sR1, 1);
+  memset(hdbABuf + 10, sR2, 1);
+  
+  sR1 = mempeek(hdbBBuf + 9);
+  sR2 = mempeek(hdbBBuf + 10);
+  a0 = mempeek(hdbBBuf + 2);
+  a1 = mempeek(hdbBBuf + 3);
+  a2 = mempeek(hdbBBuf + 4);
+  b1 = mempeek(hdbBBuf + 5);
+  b2 = mempeek(hdbBBuf + 6);
+  
+  headBumpSampleR = (headBiqSampleR * a0) + sR1;
+  sR1 = (headBiqSampleR * a1) - (headBumpSampleR * b1) + sR2;
+  sR2 = (headBiqSampleR * a2) - (headBumpSampleR * b2);
+  
+  memset(hdbBBuf + 9, sR1, 1);
+  memset(hdbBBuf + 10, sR2, 1);
+) : 0;
+
+inputSampleL += (headBumpSampleL * headBumpMix);
+inputSampleR += (headBumpSampleR * headBumpMix);
+
+// ---- Dubly Decode ----
+iirDecL = (iirDecL * (1.0 - iirDecFreq)) + (inputSampleL * iirDecFreq);
+highPart = ((inputSampleL - iirDecL) * 2.628);
+highPart += avgDecL; avgDecL = (inputSampleL - iirDecL) * 1.372;
+(highPart > 1.0) ? (highPart = 1.0) : 0;
+(highPart < -1.0) ? (highPart = -1.0) : 0;
+dubly = abs(highPart);
+(dubly > 0.0) ? (
+  adjust = log(1.0 + (255.0 * dubly)) / 2.40823996531;
+  (adjust > 0.0) ? (dubly /= adjust) : 0;
+  compDecL = (compDecL * (1.0 - iirDecFreq)) + (dubly * iirDecFreq);
+  inputSampleL += ((highPart * compDecL) * outlyAmount);
+) : 0;
+
+iirDecR = (iirDecR * (1.0 - iirDecFreq)) + (inputSampleR * iirDecFreq);
+highPart = ((inputSampleR - iirDecR) * 2.628);
+highPart += avgDecR; avgDecR = (inputSampleR - iirDecR) * 1.372;
+(highPart > 1.0) ? (highPart = 1.0) : 0;
+(highPart < -1.0) ? (highPart = -1.0) : 0;
+dubly = abs(highPart);
+(dubly > 0.0) ? (
+  adjust = log(1.0 + (255.0 * dubly)) / 2.40823996531;
+  (adjust > 0.0) ? (dubly /= adjust) : 0;
+  compDecR = (compDecR * (1.0 - iirDecFreq)) + (dubly * iirDecFreq);
+  inputSampleR += ((highPart * compDecR) * outlyAmount);
+) : 0;
+
+// ---- Output Gain ----
+(outputGain != 1.0) ? (
+  inputSampleL *= outputGain;
+  inputSampleR *= outputGain;
+) : 0;
+
+// ---- ClipOnly3 Soft Clipping & Limiting ----
+noise = 1.0 - ((fpdL / 4294967296.0) * 0.076);
+
+(wasPosClipL == 1) ? (
+  (inputSampleL < lastSampleL) ?
+    (lastSampleL = (0.9085097 * noise) + (inputSampleL * (1.0 - noise))) :
+    (lastSampleL = 0.94);
+) : 0;
+wasPosClipL = 0;
+
+(inputSampleL > 0.9085097) ? (
+  wasPosClipL = 1;
+  inputSampleL = (0.9085097 * noise) + (lastSampleL * (1.0 - noise));
+) : 0;
+
+(wasNegClipL == 1) ? (
+  (inputSampleL > lastSampleL) ?
+    (lastSampleL = (-0.9085097 * noise) + (inputSampleL * (1.0 - noise))) :
+    (lastSampleL = -0.94);
+) : 0;
+wasNegClipL = 0;
+
+(inputSampleL < -0.9085097) ? (
+  wasNegClipL = 1;
+  inputSampleL = (-0.9085097 * noise) + (lastSampleL * (1.0 - noise));
+) : 0;
+
+memset(slewL + spacing * 2, abs(lastSampleL - inputSampleL), 1);
+x = spacing * 2;
+loop(spacing * 2,
+  (x > 0) ? (memset(slewL + (x - 1), mempeek(slewL + x), 1)) : 0;
+  x -= 1;
+);
+
+memset(intermediateL + spacing, inputSampleL, 1);
+inputSampleL = lastSampleL;
+x = spacing;
+loop(spacing,
+  (x > 0) ? (memset(intermediateL + (x - 1), mempeek(intermediateL + x), 1)) : 0;
+  x -= 1;
+);
+lastSampleL = mempeek(intermediateL + 0);
+
+(wasPosClipL || wasNegClipL) ? (
+  avgVal = 0.0;
+  x = 0;
+  loop(spacing,
+    avgVal += mempeek(intermediateL + x);
+    x += 1;
+  );
+  lastSampleL = avgVal / spacing;
+) : 0;
+
+finalSlew = 0.0;
+x = 0;
+loop(spacing * 2 + 1,
+  (finalSlew < mempeek(slewL + x)) ? (finalSlew = mempeek(slewL + x)) : 0;
+  x += 1;
+);
+postclip = 0.94 / (1.0 + (finalSlew * 1.3986013));
+(inputSampleL > postclip) ? (inputSampleL = postclip) : 0;
+(inputSampleL < -postclip) ? (inputSampleL = -postclip) : 0;
+
+// Right channel ClipOnly3
+noise = 1.0 - ((fpdR / 4294967296.0) * 0.076);
+
+(wasPosClipR == 1) ? (
+  (inputSampleR < lastSampleR) ?
+    (lastSampleR = (0.9085097 * noise) + (inputSampleR * (1.0 - noise))) :
+    (lastSampleR = 0.94);
+) : 0;
+wasPosClipR = 0;
+
+(inputSampleR > 0.9085097) ? (
+  wasPosClipR = 1;
+  inputSampleR = (0.9085097 * noise) + (lastSampleR * (1.0 - noise));
+) : 0;
+
+(wasNegClipR == 1) ? (
+  (inputSampleR > lastSampleR) ?
+    (lastSampleR = (-0.9085097 * noise) + (inputSampleR * (1.0 - noise))) :
+    (lastSampleR = -0.94);
+) : 0;
+wasNegClipR = 0;
+
+(inputSampleR < -0.9085097) ? (
+  wasNegClipR = 1;
+  inputSampleR = (-0.9085097 * noise) + (lastSampleR * (1.0 - noise));
+) : 0;
+
+memset(slewR + spacing * 2, abs(lastSampleR - inputSampleR), 1);
+x = spacing * 2;
+loop(spacing * 2,
+  (x > 0) ? (memset(slewR + (x - 1), mempeek(slewR + x), 1)) : 0;
+  x -= 1;
+);
+
+memset(intermediateR + spacing, inputSampleR, 1);
+inputSampleR = lastSampleR;
+x = spacing;
+loop(spacing,
+  (x > 0) ? (memset(intermediateR + (x - 1), mempeek(intermediateR + x), 1)) : 0;
+  x -= 1;
+);
+lastSampleR = mempeek(intermediateR + 0);
+
+(wasPosClipR || wasNegClipR) ? (
+  avgVal = 0.0;
+  x = 0;
+  loop(spacing,
+    avgVal += mempeek(intermediateR + x);
+    x += 1;
+  );
+  lastSampleR = avgVal / spacing;
+) : 0;
+
+finalSlew = 0.0;
+x = 0;
+loop(spacing * 2 + 1,
+  (finalSlew < mempeek(slewR + x)) ? (finalSlew = mempeek(slewR + x)) : 0;
+  x += 1;
+);
+postclip = 0.94 / (1.0 + (finalSlew * 1.3986013));
+(inputSampleR > postclip) ? (inputSampleR = postclip) : 0;
+(inputSampleR < -postclip) ? (inputSampleR = -postclip) : 0;
+
+// ---- Output ----
+spl0 = inputSampleL;
+spl1 = inputSampleR;
+
