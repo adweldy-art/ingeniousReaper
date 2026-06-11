@@ -21,6 +21,26 @@
         <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/ImportLCC.lua</source>
       </version>
     </reapack>
+    <reapack name="AutoGainStageToJSFX.lua" type="script" desc="Analyze selected tracks and set JSFX trim via gmem">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-25T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/AutoGainStageToJSFX.lua</source>
+      </version>
+    </reapack>
+    <reapack name="IGR_PluginBypassManager_ReaImGui.lua" type="script" desc="Bypass or enable all instances of a selected plugin across the project">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-27T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-Scripts/IGR_PluginBypassManager_ReaImGui.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="JSFX">
+    <reapack name="IGR_StageTrim_gmem.jsfx" type="effect" desc="gmem-controlled trim stage for track gain staging">
+      <version name="0.1" author="ingeniousWizard" time="2026-05-25T00:00:00Z">
+        <changelog><![CDATA[Initial release]]></changelog>
+        <source platform="all">https://raw.githubusercontent.com/adweldy-art/ingeniousReaper/main/Reaper-JSFX/IGR_StageTrim_gmem.jsfx</source>
+      </version>
+    </reapack>
   </category>
   <category name="Recording">
     <reapack name="ScheduleRecord.lua" type="script" desc="Scheduled Recorder - Multi-Schedule (Persistent)">

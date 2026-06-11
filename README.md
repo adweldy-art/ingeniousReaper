@@ -9,6 +9,7 @@ This repository contains Lua scripts for the [REAPER](https://www.reaper.fm/) di
 - building or aligning tempo maps from click tracks
 - importing files onto matching tracks
 - scheduling recording sessions
+- automatic gain staging of selected tracks with JSFX trim control
 
 Repository description: **reaper scripts and jsfx plugins**.
 
@@ -20,6 +21,11 @@ Repository description: **reaper scripts and jsfx plugins**.
 
 ### Tracks
 - **ImportLCC.lua** — Import files to same-named tracks at project start.
+- **AutoGainStageToJSFX.lua** — Analyze selected tracks (RMS/Peak/Crest) and write trim commands to a JSFX via gmem.
+- **IGR_PluginBypassManager_ReaImGui.lua** — Scan the project, choose a plugin name, and bypass or re-enable all matching instances.
+
+### JSFX
+- **IGR_StageTrim_gmem.jsfx** — Track trim effect controlled by ReaScript over gmem.
 
 ### Recording
 - **ScheduleRecord.lua** — Scheduled recorder with persistent multi-schedule support.
@@ -29,10 +35,13 @@ Repository description: **reaper scripts and jsfx plugins**.
 ```text
 .
 ├── Reaper-Scripts/
+│   ├── AutoGainStageToJSFX.lua
 │   ├── GetClickTempo.lua
 │   ├── ImportLCC.lua
 │   ├── ScheduleRecord.lua
 │   └── TempoToClickAlign.lua
+├── Reaper-JSFX/
+│   └── IGR_StageTrim_gmem.jsfx
 ├── index.xml
 └── README.md
 ```
@@ -87,6 +96,9 @@ Current package versions listed in `index.xml`:
 - `TempoToClickAlign.lua` — `0.1`
 - `ImportLCC.lua` — `0.1.2`
 - `ScheduleRecord.lua` — `0.1`
+- `AutoGainStageToJSFX.lua` — `0.1`
+- `IGR_PluginBypassManager_ReaImGui.lua` — `0.1`
+- `IGR_StageTrim_gmem.jsfx` — `0.1`
 
 ## Author
 

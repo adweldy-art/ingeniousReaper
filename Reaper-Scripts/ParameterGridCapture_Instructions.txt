@@ -1,0 +1,79 @@
+IGR Parameter Grid Capture - Instructions (Updated)
+
+PURPOSE
+- Capture plugin behavior data across parameter combinations
+- Output: CSV measurements + JSON metadata for offline analysis
+- Analysis phase only (no JSFX generation yet)
+
+NEW: INTERACTIVE CONFIGURATOR UI (Recommended)
+1) Run: IGR_ParamGridConfigurator_UI.lua
+2) Requires ReaImGui extension (install via ReaPack if needed)
+3) Three-tab interface:
+   - Tab 1: Select DUT (track and FX)
+     - Rescan tracks and browse available FX
+   - Tab 2: Configure Parameters
+     - Check parameters to include in grid
+     - Set min/max normalized range (0-1)
+     - Set step count for each parameter
+   - Tab 3: Test Settings
+     - Choose signal type (sine or pink noise)
+     - Enter input levels (dB, semicolon-separated)
+     - Preview estimated pass count
+     - Launch capture
+     - Stop capture (safe cancel)
+     - Live backend status/progress readout
+
+ALTERNATIVE: COMMAND-LINE SCRIPT (Advanced)
+1) Run: CapturePluginParameterGrid.lua
+2) Manual prompt entry (see details below)
+
+COMMAND-LINE PROMPT FIELDS (if using CapturePluginParameterGrid.lua directly)
+- Track mode: 0=Master, 1=Selected track set
+- Track # in selected set (if mode=1)
+- DUT FX # (1-based index)
+- Signal: 0=Sine, 1=Pink noise
+- Levels dB: semicolon-separated, e.g., -30;-24;-18
+- Param specs: format p:min:max:steps;...
+  Example: 1:0:1:5;2:0:1:5 (two params)
+
+OUTPUTS
+- CSV: IGR_ParamGridCapture_YYYYMMDD_HHMMSS.csv
+  - Rows: one per analyzer step
+  - Columns: combo index, level, freq, in/out dB, gain, THD, crest, signal type, plus dynamic param columns
+- JSON sidecar: IGR_ParamGridCapture_YYYYMMDD_HHMMSS.meta.json
+  - Run metadata, DUT info, parameter specs, combo definitions
+
+VALIDATION
+- After capture, run: ValidateParamGridCapture.lua
+- Select CSV file to validate
+- Checks:
+  - Column completeness
+  - Row count and numeric integrity
+  - Combo and level coverage
+  - Metadata sidecar consistency
+- Output: PASS/FAIL popup + detailed console report
+
+REAPER SETUP
+1) Create a test track with your DUT plugin
+2) Add JS: IGR_AnalyzerLab in Source mode (before DUT)
+3) Add DUT plugin (your test target)
+4) Add JS: IGR_AnalyzerLab in Probe mode (after DUT)
+5) Verify audio routing: Source -> DUT -> Probe
+6) Run the configurator script
+
+SUGGESTED FIRST TEST (UI)
+1) Select Master track
+2) Select an EQ plugin (e.g., ReaEQ)
+3) Tab 2: Check 1-2 parameters, keep defaults
+4) Tab 3: Use single level (-24 dB)
+5) Launch
+6) Run validator on output CSV
+
+TROUBLESHOOTING
+- ReaImGui missing: install from ReaPack (search "ReaImGui")
+- Analyzer compile error: check console; may need REAPER update
+- No FX shown: ensure FX are on the selected track
+- Validation warnings: check combo/level consistency in CSV
+- Capture appears stuck: use Stop Capture in Tab 3, then relaunch
+- No console updates: Tab 3 now shows backend status and progress heartbeat
+- Pink/sine not changing: stop any existing run first, then relaunch with desired signal type

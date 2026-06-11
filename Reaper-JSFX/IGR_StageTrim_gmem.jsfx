@@ -1,0 +1,63 @@
+desc: IGR_StageTrim_gmem
+tags: utility trim gain gmem
+
+slider1:1<1,256,1>Slot (auto-set by script)
+slider2:0<0,1,1{Read gmem,Bypass gmem}>gmem Mode
+slider3:0<-24,24,0.01>Trim (dB)
+slider4:0<0,1,1{Auto,Manual}>Source
+slider5:30<1,200,1>-Smoothing (ms)
+
+@init
+slot = 1;
+useBypass = 0;
+manualDb = 0;
+sourceMode = 0;
+
+targetDb = 0;
+currentDb = 0;
+lastNonce = -1;
+smoothCoeff = 0.001;
+
+function update_params()
+(
+  slot = floor(slider1 + 0.5);
+  slot < 1 ? slot = 1 : slot;
+  slot > 256 ? slot = 256 : slot;
+
+  useBypass = slider2 >= 0.5;
+  manualDb = slider3;
+  sourceMode = slider4 >= 0.5;
+
+  smoothMs = slider5;
+  smoothMs < 1 ? smoothMs = 1 : smoothMs;
+  tau = smoothMs * 0.001;
+  smoothCoeff = exp(-1 / max(1, srate * tau));
+);
+
+@slider
+update_params();
+
+@block
+update_params();
+
+(!sourceMode && !useBypass) ? (
+  base = 64 + (slot - 1) * 4;
+  nonce = gmem[base + 1];
+  nonce != lastNonce ? (
+    targetDb = gmem[base + 0];
+    targetDb < -48 ? targetDb = -48 : targetDb;
+    targetDb > 48 ? targetDb = 48 : targetDb;
+    lastNonce = nonce;
+  );
+);
+
+@sample
+desiredDb = sourceMode ? manualDb : targetDb;
+currentDb = (currentDb * smoothCoeff) + (desiredDb * (1 - smoothCoeff));
+gain = exp(currentDb * 0.11512925464970229); // ln(10)/20
+
+ch = 0;
+loop(num_ch,
+  spl(ch) *= gain;
+  ch += 1;
+);

@@ -1,0 +1,363 @@
+desc: IGR_AnalyzerLab (Source/Probe)
+tags: analyzer sweep eq compression distortion harmonics
+options:gmem=IGR_ANALYZER_LAB
+
+slider1:0<0,1,1{Source,Probe}>Mode
+slider2:0<0,1,1{Stop,Run}>Run (Source)
+slider3:0<0,1,1{Stepped Sine,Pink Noise}>Signal (Source)
+slider4:20<10,22050,1>Start Freq Hz (Source)
+slider5:20000<10,22050,1>End Freq Hz (Source)
+slider6:1<0,3,1{1/1 Oct,1/3 Oct,1/6 Oct,1/8 Oct}>Step Resolution (Source)
+slider7:250<20,5000,1>Dwell ms (Source)
+slider8:-18<-60,0,0.1>Level dBFS (Source)
+slider9:0<-24,24,0.1>Output Trim dB
+
+@init
+pi2 = 2.0 * $pi;
+eps = 0.000000000001;
+
+// gmem map
+// [0] magic
+// [1] source run flag (1 running, 0 idle)
+// [2] source signal type
+// [3] source step index
+// [4] source total steps
+// [5] source freq
+// [6] source amp dB
+// [7] source nonce
+// [8] source done flag (1 done)
+// [100] probe result sequence
+// [101] nonce
+// [102] step index
+// [103] freq
+// [104] in dB
+// [105] out dB
+// [106] gain dB
+// [107] thd dB
+// [108] crest dB
+// [109] signal type
+
+gmem[0] = 4242;
+
+run_prev = 0;
+running = 0;
+nonce = 0;
+
+phase = 0;
+cur_step = 0;
+total_steps = 1;
+samples_in_step = 0;
+dwell_samples = 12000;
+steps_per_oct = 1;
+cur_freq = 1000;
+cur_amp_db = -18;
+cur_amp_lin = 0.1258925412;
+
+// Pink noise states (Paul Kellet style)
+b0=0; b1=0; b2=0; b3=0; b4=0; b5=0; b6=0;
+pink_last=0;
+
+// Probe accumulators
+p_run = 0;
+p_nonce = 0;
+p_step = -1;
+p_sig = 0;
+p_freq = 1000;
+p_amp_db = -18;
+
+p_count = 0;
+p_sum_sq = 0;
+p_peak = 0;
+
+g1_s1 = g1_s2 = 0;
+g2_s1 = g2_s2 = 0;
+g3_s1 = g3_s2 = 0;
+g4_s1 = g4_s2 = 0;
+g5_s1 = g5_s2 = 0;
+
+g1_c = 0;
+g2_c = 0;
+g3_c = 0;
+g4_c = 0;
+g5_c = 0;
+
+result_seq = 0;
+
+function db2lin(db) (
+  10^(db/20);
+);
+
+function lin2db(v) (
+  20 * log(max(eps, v)) / log(10);
+);
+
+function step_mode_to_spo(m)
+(
+  m == 0 ? 1 : (
+    m == 1 ? 3 : (
+      m == 2 ? 6 : 8
+    )
+  );
+);
+
+function set_goertzel_coeffs(freq)
+(
+  f1 = min(freq, srate * 0.49);
+  f2 = min(freq * 2, srate * 0.49);
+  f3 = min(freq * 3, srate * 0.49);
+  f4 = min(freq * 4, srate * 0.49);
+  f5 = min(freq * 5, srate * 0.49);
+
+  g1_c = 2 * cos(pi2 * f1 / srate);
+  g2_c = 2 * cos(pi2 * f2 / srate);
+  g3_c = 2 * cos(pi2 * f3 / srate);
+  g4_c = 2 * cos(pi2 * f4 / srate);
+  g5_c = 2 * cos(pi2 * f5 / srate);
+);
+
+function reset_probe_accum()
+(
+  p_count = 0;
+  p_sum_sq = 0;
+  p_peak = 0;
+
+  g1_s1 = g1_s2 = 0;
+  g2_s1 = g2_s2 = 0;
+  g3_s1 = g3_s2 = 0;
+  g4_s1 = g4_s2 = 0;
+  g5_s1 = g5_s2 = 0;
+);
+
+function finalize_probe_step()
+(
+  p_count > 32 ? (
+    rms = sqrt(p_sum_sq / p_count);
+    out_db = lin2db(rms);
+    gain_db = out_db - p_amp_db;
+    crest_db = lin2db(p_peak / max(eps, rms));
+
+    p1 = g1_s1*g1_s1 + g1_s2*g1_s2 - g1_c*g1_s1*g1_s2;
+    p2 = g2_s1*g2_s1 + g2_s2*g2_s2 - g2_c*g2_s1*g2_s2;
+    p3 = g3_s1*g3_s1 + g3_s2*g3_s2 - g3_c*g3_s1*g3_s2;
+    p4 = g4_s1*g4_s1 + g4_s2*g4_s2 - g4_c*g4_s1*g4_s2;
+    p5 = g5_s1*g5_s1 + g5_s2*g5_s2 - g5_c*g5_s1*g5_s2;
+
+    thd_lin = sqrt(max(0, p2 + p3 + p4 + p5) / max(eps, p1));
+    thd_db = lin2db(thd_lin);
+
+    result_seq += 1;
+    gmem[100] = result_seq;
+    gmem[101] = p_nonce;
+    gmem[102] = p_step;
+    gmem[103] = p_freq;
+    gmem[104] = p_amp_db;
+    gmem[105] = out_db;
+    gmem[106] = gain_db;
+    gmem[107] = thd_db;
+    gmem[108] = crest_db;
+    gmem[109] = p_sig;
+  );
+
+  reset_probe_accum();
+);
+
+function source_recalc()
+(
+  start_f = max(10, slider4);
+  end_f = max(start_f, slider5);
+  steps_per_oct = step_mode_to_spo(slider6|0);
+
+  oct_span = log(end_f / start_f) / log(2);
+  total_steps = max(1, floor(oct_span * steps_per_oct + 0.5) + 1);
+  dwell_samples = max(32, floor(slider7 * 0.001 * srate + 0.5));
+
+  cur_amp_db = slider8;
+  cur_amp_lin = db2lin(cur_amp_db);
+);
+
+@slider
+source_recalc();
+
+@block
+mode = slider1|0;
+run_cmd = slider2|0;
+sig_type = slider3|0;
+trim_lin = db2lin(slider9);
+
+source_recalc();
+
+mode == 0 ? (
+  run_edge = (run_cmd == 1 && run_prev == 0);
+
+  run_edge ? (
+    running = 1;
+    nonce += 1;
+    nonce < 1 ? nonce = 1;
+    cur_step = 0;
+    samples_in_step = 0;
+    phase = 0;
+    gmem[8] = 0;
+  );
+
+  running ? (
+    // frequency for current step
+    start_f = max(10, slider4);
+    cur_freq = start_f * (2^(cur_step / max(1, steps_per_oct)));
+    cur_freq > slider5 ? cur_freq = slider5;
+
+    gmem[1] = 1;
+    gmem[2] = sig_type;
+    gmem[3] = cur_step;
+    gmem[4] = total_steps;
+    gmem[5] = cur_freq;
+    gmem[6] = cur_amp_db;
+    gmem[7] = nonce;
+  ) : (
+    gmem[1] = 0;
+  );
+
+  run_prev = run_cmd;
+) : (
+  run_prev = 0;
+);
+
+// Probe side state tracking
+mode == 1 ? (
+  src_run = gmem[1]|0;
+  src_step = gmem[3]|0;
+  src_nonce = gmem[7]|0;
+  src_freq = max(10, gmem[5]);
+  src_amp_db = gmem[6];
+  src_sig = gmem[2]|0;
+
+  new_run = (src_run == 1 && p_run == 0) || (src_nonce != p_nonce);
+  step_changed = (src_step != p_step);
+
+  new_run ? (
+    finalize_probe_step();
+    p_nonce = src_nonce;
+    p_step = src_step;
+    p_freq = src_freq;
+    p_amp_db = src_amp_db;
+    p_sig = src_sig;
+    set_goertzel_coeffs(p_freq);
+    reset_probe_accum();
+  ) : (
+    src_run == 1 && step_changed ? (
+      finalize_probe_step();
+      p_step = src_step;
+      p_freq = src_freq;
+      p_amp_db = src_amp_db;
+      p_sig = src_sig;
+      set_goertzel_coeffs(p_freq);
+      reset_probe_accum();
+    ) : 0;
+  );
+
+  p_run = src_run;
+
+  src_run == 0 && p_count > 0 ? (
+    finalize_probe_step();
+  ) : 0;
+);
+
+@sample
+mode = slider1|0;
+trim_lin = db2lin(slider9);
+
+mode == 0 ? (
+  running ? (
+    sig_type = slider3|0;
+
+    sig_type == 0 ? (
+      phase += (pi2 * cur_freq / srate);
+      phase > pi2 ? phase -= pi2;
+      v = sin(phase) * cur_amp_lin;
+    ) : (
+      // Pink noise
+      randv = (rand(2) - 1);
+      b0 = 0.99886 * b0 + randv * 0.0555179;
+      b1 = 0.99332 * b1 + randv * 0.0750759;
+      b2 = 0.96900 * b2 + randv * 0.1538520;
+      b3 = 0.86650 * b3 + randv * 0.3104856;
+      b4 = 0.55000 * b4 + randv * 0.5329522;
+      b5 = -0.7616 * b5 - randv * 0.0168980;
+      pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + randv * 0.5362;
+      b6 = randv * 0.115926;
+      v = (pink * 0.11) * cur_amp_lin;
+    );
+
+    spl0 = v * trim_lin;
+    spl1 = v * trim_lin;
+
+    samples_in_step += 1;
+    samples_in_step >= dwell_samples ? (
+      samples_in_step = 0;
+      cur_step += 1;
+      cur_step >= total_steps ? (
+        running = 0;
+        slider2 = 0;
+        sliderchange(slider2);
+        gmem[1] = 0;
+        gmem[8] = 1;
+      );
+    );
+  ) : (
+    spl0 = 0;
+    spl1 = 0;
+  );
+) : (
+  x = (spl0 + spl1) * 0.5;
+  y = x * trim_lin;
+  spl0 *= trim_lin;
+  spl1 *= trim_lin;
+
+  src_run = gmem[1]|0;
+  src_nonce = gmem[7]|0;
+  src_step = gmem[3]|0;
+  src_freq = max(10, gmem[5]);
+  src_amp_db = gmem[6];
+
+  src_run == 1 ? (
+    // update current expected context continuously
+    p_nonce = src_nonce;
+    p_step = src_step;
+    p_freq = src_freq;
+    p_amp_db = src_amp_db;
+
+    p_count += 1;
+    p_sum_sq += y*y;
+    ay = abs(y);
+    ay > p_peak ? p_peak = ay;
+
+    t1 = y + g1_c*g1_s1 - g1_s2; g1_s2 = g1_s1; g1_s1 = t1;
+    t2 = y + g2_c*g2_s1 - g2_s2; g2_s2 = g2_s1; g2_s1 = t2;
+    t3 = y + g3_c*g3_s1 - g3_s2; g3_s2 = g3_s1; g3_s1 = t3;
+    t4 = y + g4_c*g4_s1 - g4_s2; g4_s2 = g4_s1; g4_s1 = t4;
+    t5 = y + g5_c*g5_s1 - g5_s2; g5_s2 = g5_s1; g5_s1 = t5;
+  );
+);
+
+@gfx 560 140
+gfx_setfont(1, "Arial", 16);
+gfx_set(1,1,1,1);
+
+mode = slider1|0;
+mode == 0 ? (
+  gfx_x = 10; gfx_y = 10;
+  gfx_printf("IGR AnalyzerLab - SOURCE\n");
+  gfx_printf("Run: %d  Signal: %s\n", running, (slider3|0)==0 ? "Stepped Sine" : "Pink Noise");
+  gfx_printf("Step: %d / %d\n", cur_step+1, total_steps);
+  gfx_printf("Freq: %.2f Hz\n", cur_freq);
+  gfx_printf("Level: %.2f dBFS\n", cur_amp_db);
+) : (
+  gfx_x = 10; gfx_y = 10;
+  gfx_printf("IGR AnalyzerLab - PROBE\n");
+  gfx_printf("Source run: %d  Step: %d\n", gmem[1]|0, gmem[3]|0);
+  gfx_printf("Freq: %.2f Hz  In: %.2f dBFS\n", gmem[5], gmem[6]);
+  gfx_printf("Latest out: %.2f dBFS\n", gmem[105]);
+  gfx_printf("Latest gain: %.2f dB\n", gmem[106]);
+  gfx_printf("Latest THD: %.2f dB\n", gmem[107]);
+  gfx_printf("Latest crest: %.2f dB\n", gmem[108]);
+  gfx_printf("Result seq: %d\n", gmem[100]|0);
+);
