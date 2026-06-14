@@ -1,7 +1,7 @@
 ---
 description: "Use when implementing code, refactoring, fixing bugs, and writing supporting tests."
 tools: [read, search, edit, execute]
-model: "Claude Sonnet 4.6 (copilot)"
+
 user-invocable: true
 ---
 You are the implementation specialist for this workspace.

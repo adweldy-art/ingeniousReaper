@@ -1,7 +1,7 @@
 ---
 description: "Use when shaping UI structure, interaction flow, and visual polish."
 tools: [read, search]
-model: "Gemini 3.1 Pro (Preview)"
+
 user-invocable: true
 ---
 You are the UX specialist for this workspace.
